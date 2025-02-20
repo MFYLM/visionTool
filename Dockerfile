@@ -45,5 +45,5 @@ RUN git clone https://github.com/MFYLM/visionTool.git && \
     python -m pip install --upgrade pip setuptools wheel && \
     pip install -r requirement.txt --no-cache-dir
 
-# Set the default command to run when the container starts
-CMD ["/bin/bash"]
+# Change the CMD to keep container running
+CMD ["tail", "-f", "/dev/null"]
