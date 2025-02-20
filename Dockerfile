@@ -5,31 +5,45 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 WORKDIR /
 
 # Install system dependencies
-ENV DEBIAN_FRONTEND noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     git \
     wget \
     unzip \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    build-essential \
+    python3-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /miniconda.sh && \
-        bash /miniconda.sh -b -p /opt/conda && \
-        rm /miniconda.sh
+# Install system dependencies for Conda
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Update PATH environment variable
-ENV PATH="/opt/conda/bin:$PATH"
+RUN arch=$(uname -m) && \
+    if [ "$arch" = "x86_64" ]; then \
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"; \
+    elif [ "$arch" = "aarch64" ]; then \
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"; \
+    else \
+    echo "Unsupported architecture: $arch"; \
+    exit 1; \
+    fi && \
+    wget $MINICONDA_URL -O miniconda.sh && \
+    mkdir -p /root/.conda && \
+    bash miniconda.sh -b -p /root/miniconda3 && \
+    rm -f miniconda.sh
 
 # Install Python dependencies
 RUN pip install --upgrade pip
 
 # Install CoTracker dependencies
-RUN git clone https://github.com/MFYLM/visionTool.git
-WORKDIR /visionTool
-RUN pip install -r requirement.txt
-WORKDIR /
+RUN git clone https://github.com/MFYLM/visionTool.git && \
+    cd visionTool && \
+    python -m pip install --upgrade pip setuptools wheel && \
+    pip install -r requirement.txt --no-cache-dir
 
 # Set the default command to run when the container starts
 CMD ["/bin/bash"]
