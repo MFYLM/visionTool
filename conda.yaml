@@ -1,0 +1,38 @@
+name: vision-tool
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pytorch==2.1.0
+  # PIP packages (for packages not available via conda)
+  - pip
+  - pip:
+    - decord
+    - evo
+    - xformers
+    - numpy
+    - easydict
+    - openexr==3.3.1
+    - click==8.1.7
+    - trimesh==4.5.1
+    - pillow==10.4.0
+    - huggingface_hub==0.25.2
+    - torchvision
+    - matplotlib
+    - scipy==1.10.1
+    - tqdm==4.65.0
+    - imageio==2.31.1
+    - imageio-ffmpeg==0.4.8
+    - einops==0.6.1
+    - tensorboard
+    # Monst3r requirements
+    - pyglet<2
+    - gradio
+    - gdown
+    - opencv-python==4.10.0.84
+    - timm==0.6.13
+    - flow-vis
+    - roma
