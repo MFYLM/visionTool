@@ -1,3 +1,13 @@
 # ignore weights
 *.pt
+*.mp4
+*.obj
+*.ply
+*.npy
+*.pyc
+*.ipynb
+*.pth
+*.vsh
+*.fsh
 
+/data
