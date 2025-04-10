@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+import sys
+sys.path.append("/root/visionTool/detect_segmentation/")
 from segment_anything import SamPredictor, sam_model_registry
 from transformers import Owlv2ForObjectDetection, Owlv2Processor
 from typing import Dict, List, Tuple, Optional, Union
@@ -50,7 +52,7 @@ class OwlV2SAM:
         self,
         image: Union[np.ndarray, str],
         text_prompts: List[str],
-        detection_threshold: float = 0.1,
+        detection_threshold: float = 0.3,
         return_all_detections: bool = False,
     ) -> Dict:
         """Detect objects with OWLv2 and segment with SAM.

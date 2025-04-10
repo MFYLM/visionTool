@@ -14,15 +14,16 @@ import halcon as ha
 
 class PPFModel():
     def __init__(
-            self, object_model,
-            ModelSamplingDist = 0.03,
-            ModelInvertNormals = 'true',
-            UseViewBased = 'false',
-        ) -> None:
+        self, 
+        object_model,
+        ModelSamplingDist = 0.03,
+        ModelInvertNormals = 'true',
+        UseViewBased = 'false',
+    ) -> None:
         '''
         @params
         object_model: str or np.ndarray. The path to the ply model file or the array storing model points
-                      XYZ coordinates of the model points should be in milimeter
+                        XYZ coordinates of the model points should be in milimeter
         others: all other arguments are to be used in create_surface_model() in halcon
                 Refer https://www.mvtec.com/doc/halcon/2105/en/create_surface_model.html for details
         '''
@@ -36,9 +37,11 @@ class PPFModel():
             raise Exception("Unknown type of object_model:", type(object_model))
         
         self.Object3DModel = Object3DModel
+        # import ipdb; ipdb.set_trace()
         
         self.ObjectSurfaceModel = ha.create_surface_model(
-            self.Object3DModel, ModelSamplingDist,
+            self.Object3DModel, 
+            ModelSamplingDist,
             ['model_invert_normals', 'train_view_based'],
             [ModelInvertNormals, UseViewBased], 
         )
@@ -46,15 +49,15 @@ class PPFModel():
         self.UseViewBased = UseViewBased
 
     def find_surface_model(
-            self, scene_pc, 
-            MaxOverlapDistRel=0, 
-            NumResult=100,
-            SceneNormalComputation='mls',
-            SparsePoseRefinement = 'true',
-            DensePoseRefinement = 'true',
-            RefPtRate = 1,
-            SceneSamplingDist = 0.03,
-        ):
+        self, scene_pc, 
+        MaxOverlapDistRel=0, 
+        NumResult=100,
+        SceneNormalComputation='mls',
+        SparsePoseRefinement = 'true',
+        DensePoseRefinement = 'true',
+        RefPtRate = 1,
+        SceneSamplingDist = 0.03,
+    ):
         '''
         @params
         scene_pc: np.ndarray of shape (N, 6), the scene point cloud, in milimeter

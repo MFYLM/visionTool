@@ -9,5 +9,7 @@
 *.pth
 *.vsh
 *.fsh
+*.h5
+*.zip
 
 /data
