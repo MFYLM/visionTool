@@ -8,6 +8,7 @@ import numpy as np
 from typing import Literal, Optional, List, Union
 from PIL import Image
 from tqdm.auto import tqdm
+from visualizer import viser_wrapper, apply_sky_segmentation
 
 
 class PosePredictor:
@@ -22,8 +23,8 @@ class PosePredictor:
         self.point_cloud_predictor = PointCloudPredictor(device, point_cloud_model_name)
     
     def seg_single_image(
-        self, 
-        image: np.ndarray, 
+        self,
+        image: np.ndarray,
         mode: Literal["detect", "point"] = "detect",
         threshold: float = 0.3,
         all_detections: bool = False,
@@ -31,7 +32,7 @@ class PosePredictor:
         points: Optional[List[List[int]]] = None, # List of [x, y] coordinates
         point_labels: Optional[List[int]] = None, # 1 for foreground, 0 for background
         multimask: bool = False,
-    ) -> dict:        
+    ) -> dict:
         # Process based on mode
         if mode == "detect":
             assert text_prompts is not None
@@ -90,7 +91,7 @@ class PosePredictor:
                 point_labels=point_labels,
                 multimask_output=multimask,
             )
-
+            
             # Print results
             num_masks = len(results["masks"])
             print(f"Generated {num_masks} mask{'s' if num_masks != 1 else ''}")
@@ -115,8 +116,9 @@ class PosePredictor:
         all_detections: bool = False,
         multimask: bool = False,
     ) -> tuple[np.ndarray]:
+        masked_image = None
+        obj_pc = None
         if is_segment:
-            masked_image = None
             results = self.seg_single_image(
                 image,
                 mode=seg_mode,
@@ -130,23 +132,22 @@ class PosePredictor:
             # mask out background from images
             if "mask" in results:
                 masked_image = np.multiply(image, results["mask"][:, :, np.newaxis])
+                # Add sequence dimension
+                masked_image = masked_image[np.newaxis, ...]
+                obj_pc, _ = self.point_cloud_predictor.predict(masked_image, num_points=None)
             else:
                 print("Mask not found")
-                masked_image = image
-        
-        del self.detector
+                
         # Generate point clouds for object and scene
         print("Predicting point clouds...")
         # Add sequence dimension
-        masked_image = masked_image[np.newaxis, ...]
         image = image[np.newaxis, ...]
-        obj_pc = self.point_cloud_predictor.predict(masked_image if is_segment else image, num_points=obj_num_points) if is_segment else None
-        scene_pc = self.point_cloud_predictor.predict(image, num_points=scene_num_points)
-        return scene_pc, obj_pc
+        scene_pc, scene_predictions = self.point_cloud_predictor.predict(image, num_points=None)
+        return scene_pc, obj_pc, scene_predictions
     
     def get_obj_pose(
         self,
-        image: np.ndarray, 
+        image: np.ndarray,
         obj_file_path: Optional[str] = None,
         is_segment: bool = False,
         scene_num_points: int = 2048,
@@ -159,10 +160,10 @@ class PosePredictor:
         multimask: bool = False,
     ) -> np.ndarray:
         if is_segment:
-            scene_pc, obj_pc = self.get_obj_and_scene_point_cloud(
-                image, 
-                scene_num_points=scene_num_points, 
-                obj_num_points=obj_num_points, 
+            scene_pc, obj_pc, predictions = self.get_obj_and_scene_point_cloud(
+                image,
+                scene_num_points=scene_num_points,
+                obj_num_points=obj_num_points,
                 is_segment=True,
                 text_prompts=text_prompts,
                 points=points,
@@ -174,7 +175,7 @@ class PosePredictor:
             object_model = obj_pc[..., :3]   # only need XYZ
         else:
             assert obj_file_path is not None
-            scene_pc, _ = self.get_obj_and_scene_point_cloud(
+            scene_pc, _, predictions = self.get_obj_and_scene_point_cloud(
                 image, 
                 scene_num_points=scene_num_points, 
                 obj_num_points=obj_num_points, 
@@ -188,27 +189,56 @@ class PosePredictor:
             )
             object_model = obj_file_path
         
-        print(f"Estimating object pose with {object_model}...")
+        # np.save("/root/visionTool/pose_estimation/scene_pc.npy", scene_pc)
+        # np.save("/root/visionTool/pose_estimation/obj_pc.npy", obj_pc)
+        
+        object_model_type = "point cloud" if isinstance(object_model, np.ndarray) else "mesh"
+        print(f"Estimating object pose with {object_model_type}...")
+        
+        # np.save("/root/visionTool/pose_estimation/scene_pc.npy", scene_pc)
         pose_estimator = PPFModel(object_model, ModelInvertNormals="false")
         poses_ppf, scores_ppf, time_ppf = pose_estimator.find_surface_model(scene_pc, SceneSamplingDist=0.03)
         pose_hypos = poses_ppf[0]  # take the most voted one
-        return pose_hypos
+        return pose_hypos, scores_ppf[0], predictions
 
 
 if __name__ == "__main__":
-    # import argparse
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--image_path", type=str, help="Path to image")
+    import argparse
+    parser = argparse.ArgumentParser(description="VGGT demo with viser for 3D visualization")
+    parser.add_argument(
+        "--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images"
+    )
+    parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
+    parser.add_argument("--background_mode", action="store_true", help="Run the viser server in background mode")
+    parser.add_argument("--port", type=int, default=8080, help="Port number for the viser server")
+    parser.add_argument(
+        "--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out"
+    )
+    parser.add_argument("--mask_sky", action="store_true", help="Apply sky segmentation to filter out sky points")
+    
+    args = parser.parse_args()
     
     images = np.load("/root/visionTool/pose_estimation/sample_images.npy")
     pose_estimator = PosePredictor()
-    pose = pose_estimator.get_obj_pose(
+    pose, score, predictions = pose_estimator.get_obj_pose(
         images[0], 
+        # obj_file_path="/root/visionTool/pose_estimation/180_cm.ply",
         is_segment=True,
         scene_num_points=2048, 
         obj_num_points=1024,
         text_prompts=["bowl on the table"],
     )
-    print(f"predicted pose matrix: \n{pose}")
     
+    print(f"predicted pose matrix with score {score}: \n{pose}")
     
+    viser_server = viser_wrapper(
+        predictions,
+        port=args.port,
+        init_conf_threshold=args.conf_threshold,
+        use_point_map=args.use_point_map,
+        background_mode=args.background_mode,
+        mask_sky=args.mask_sky,
+        image_folder=args.image_folder,
+        poses=pose[np.newaxis, ...],
+    )
+

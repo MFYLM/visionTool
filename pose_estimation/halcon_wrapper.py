@@ -65,7 +65,9 @@ class PPFModel():
                 Refer https://www.mvtec.com/doc/halcon/2105/en/find_surface_model.html for details
 
         @return
-        poses_ppf: np.ndarray of shape (NumResult, 4, 4), the estimated poses, in milimeter
+        poses_ppf: np.ndarray of shape (NumResult, 4, 4), the estimated poses, in milimeter,
+                    describes the pose of the surface model in the scene coordinate system,
+                    refers to original coordinate system of the 3D object model
         scores_ppf: list of length NumResult, the score of each pose given by PPF algorithm
         time_ppf: float, the time used by find_surface_model()
         '''

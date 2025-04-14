@@ -11,5 +11,6 @@
 *.fsh
 *.h5
 *.zip
+*.png
 
 /data

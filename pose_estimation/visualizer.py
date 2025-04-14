@@ -1,40 +1,81 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-import os
-import glob
-import time
-import threading
-import argparse
-from typing import List, Optional
-
-import numpy as np
-import torch
-from tqdm.auto import tqdm
 import viser
 import viser.transforms as viser_tf
+import numpy as np
+import time
 import cv2
-from PIL import Image
-
-
+import threading
+import glob
+from typing import List
+from tqdm.auto import tqdm
+import os
 try:
     import onnxruntime
 except ImportError:
     print("onnxruntime not found. Sky segmentation may not work.")
 
-from vggt.utils.visual_util import segment_sky, download_file_from_url
-from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import load_and_preprocess_images, preprocess_images
-from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-from vggt.utils.visual_util import predictions_to_glb
+from point_cloud.vggt.utils.visual_util import segment_sky, download_file_from_url
+from point_cloud.vggt.models.vggt import VGGT
+from point_cloud.vggt.utils.load_fn import load_and_preprocess_images, preprocess_images
+from point_cloud.vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
+from point_cloud.vggt.utils.pose_enc import pose_encoding_to_extri_intri
+from point_cloud.vggt.utils.visual_util import predictions_to_glb
 
+import argparse
 
+    
+def apply_sky_segmentation(conf: np.ndarray, image_folder: str) -> np.ndarray:
+    """
+    Apply sky segmentation to confidence scores.
+
+    Args:
+        conf (np.ndarray): Confidence scores with shape (S, H, W)
+        image_folder (str): Path to the folder containing input images
+
+    Returns:
+        np.ndarray: Updated confidence scores with sky regions masked out
+    """
+    S, H, W = conf.shape
+    sky_masks_dir = image_folder.rstrip("/") + "_sky_masks"
+    os.makedirs(sky_masks_dir, exist_ok=True)
+
+    # Download skyseg.onnx if it doesn't exist
+    if not os.path.exists("skyseg.onnx"):
+        print("Downloading skyseg.onnx...")
+        download_file_from_url("https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx", "skyseg.onnx")
+
+    skyseg_session = onnxruntime.InferenceSession("skyseg.onnx")
+    image_files = sorted(glob.glob(os.path.join(image_folder, "*")))
+    sky_mask_list = []
+
+    print("Generating sky masks...")
+    for i, image_path in enumerate(tqdm(image_files[:S])):  # Limit to the number of images in the batch
+        image_name = os.path.basename(image_path)
+        mask_filepath = os.path.join(sky_masks_dir, image_name)
+
+        if os.path.exists(mask_filepath):
+            sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
+        else:
+            sky_mask = segment_sky(image_path, skyseg_session, mask_filepath)
+
+        # Resize mask to match H×W if needed
+        if sky_mask.shape[0] != H or sky_mask.shape[1] != W:
+            sky_mask = cv2.resize(sky_mask, (W, H))
+
+        sky_mask_list.append(sky_mask)
+
+    # Convert list to numpy array with shape S×H×W
+    sky_mask_array = np.array(sky_mask_list)
+    # Apply sky mask to confidence scores
+    sky_mask_binary = (sky_mask_array > 0.1).astype(np.float32)
+    conf = conf * sky_mask_binary
+
+    print("Sky segmentation applied successfully")
+    return conf
+    
+    
 def viser_wrapper(
     pred_dict: dict,
+    poses: np.ndarray = None,
     port: int = 8080,
     init_conf_threshold: float = 50.0,  # represents percentage (e.g., 50 means filter lowest 50%)
     use_point_map: bool = False,
@@ -173,9 +214,15 @@ def viser_wrapper(
                     client.camera.position = frame.position
 
         img_ids = range(S)
+        T_world_poses = closed_form_inverse_se3(poses)
         for img_id in tqdm(img_ids):
             cam2world_3x4 = extrinsics[img_id]
+            pose = T_world_poses[img_id][:3, :]
             T_world_camera = viser_tf.SE3.from_matrix(cam2world_3x4)
+            
+            # FIXME: unit problem? milimeter or centimeter?
+            pose[..., -1] -= scene_center * 10
+            T_world_pose = viser_tf.SE3.from_matrix(pose)
 
             # Add a small frame axis
             frame_axis = server.scene.add_frame(
@@ -186,6 +233,17 @@ def viser_wrapper(
                 axes_radius=0.002,
                 origin_radius=0.002,
             )
+            
+            # plot object frame
+            obj_frame = server.scene.add_frame(
+                "object_pose",
+                wxyz=T_world_pose.rotation().wxyz,
+                position=T_world_pose.translation(),
+                axes_length=0.15,  # Larger than camera frames
+                axes_radius=0.005,
+                origin_radius=0.007,
+            )
+            
             frames.append(frame_axis)
 
             # Convert the image for the frustum
@@ -268,159 +326,22 @@ def viser_wrapper(
     return server
 
 
-# Helper functions for sky segmentation
-
-
-def apply_sky_segmentation(conf: np.ndarray, image_folder: str) -> np.ndarray:
-    """
-    Apply sky segmentation to confidence scores.
-
-    Args:
-        conf (np.ndarray): Confidence scores with shape (S, H, W)
-        image_folder (str): Path to the folder containing input images
-
-    Returns:
-        np.ndarray: Updated confidence scores with sky regions masked out
-    """
-    S, H, W = conf.shape
-    sky_masks_dir = image_folder.rstrip("/") + "_sky_masks"
-    os.makedirs(sky_masks_dir, exist_ok=True)
-
-    # Download skyseg.onnx if it doesn't exist
-    if not os.path.exists("skyseg.onnx"):
-        print("Downloading skyseg.onnx...")
-        download_file_from_url("https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx", "skyseg.onnx")
-
-    skyseg_session = onnxruntime.InferenceSession("skyseg.onnx")
-    image_files = sorted(glob.glob(os.path.join(image_folder, "*")))
-    sky_mask_list = []
-
-    print("Generating sky masks...")
-    for i, image_path in enumerate(tqdm(image_files[:S])):  # Limit to the number of images in the batch
-        image_name = os.path.basename(image_path)
-        mask_filepath = os.path.join(sky_masks_dir, image_name)
-
-        if os.path.exists(mask_filepath):
-            sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
-        else:
-            sky_mask = segment_sky(image_path, skyseg_session, mask_filepath)
-
-        # Resize mask to match H×W if needed
-        if sky_mask.shape[0] != H or sky_mask.shape[1] != W:
-            sky_mask = cv2.resize(sky_mask, (W, H))
-
-        sky_mask_list.append(sky_mask)
-
-    # Convert list to numpy array with shape S×H×W
-    sky_mask_array = np.array(sky_mask_list)
-    # Apply sky mask to confidence scores
-    sky_mask_binary = (sky_mask_array > 0.1).astype(np.float32)
-    conf = conf * sky_mask_binary
-
-    print("Sky segmentation applied successfully")
-    return conf
-
-
-parser = argparse.ArgumentParser(description="VGGT demo with viser for 3D visualization")
-parser.add_argument(
-    "--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images"
-)
-parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
-parser.add_argument("--background_mode", action="store_true", help="Run the viser server in background mode")
-parser.add_argument("--port", type=int, default=8080, help="Port number for the viser server")
-parser.add_argument(
-    "--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out"
-)
-parser.add_argument("--mask_sky", action="store_true", help="Apply sky segmentation to filter out sky points")
-
-
-def main():
-    """
-    Main function for the VGGT demo with viser for 3D visualization.
-
-    This function:
-    1. Loads the VGGT model
-    2. Processes input images from the specified folder
-    3. Runs inference to generate 3D points and camera poses
-    4. Optionally applies sky segmentation to filter out sky points
-    5. Visualizes the results using viser
-
-    Command-line arguments:
-    --image_folder: Path to folder containing input images
-    --use_point_map: Use point map instead of depth-based points
-    --background_mode: Run the viser server in background mode
-    --port: Port number for the viser server
-    --conf_threshold: Initial percentage of low-confidence points to filter out
-    --mask_sky: Apply sky segmentation to filter out sky points
-    """
-    args = parser.parse_args()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-
-    print("Initializing and loading VGGT model...")
-    # model = VGGT.from_pretrained("facebook/VGGT-1B")
-
-    model = VGGT()
-    _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-    model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
-
-    model.eval()
-    model = model.to(device)
-
-    # Use the provided image folder path
-    # print(f"Loading images from {}...")
-    # print(f"Found {len(image_names)} images")
-    # image_names = glob.glob(os.path.join("/root/visionTool/point_cloud/images", "*"))
-    # images = load_and_preprocess_images(image_names).to(device)
+if __name__ == "__main__":        
+    points = np.load("/root/visionTool/pose_estimation/demo_pc.npy")
+    print(points.shape)
+        
+    # Create a sample pose with an identity rotation and a translation offset.
+    pose_matrix = np.array([
+        [-0.4907057,  -0.84682135,  0.20518655,  0.2804152 ],
+        [-0.83060734,  0.38347299, -0.40378201,  0.01438505],
+        [ 0.26324773, -0.36856759, -0.89154841,  2.2261132 ],
+        [ 0.,          0.,          0.,          1.        ],
+    ])
     
-    img_arr = np.load("/root/visionTool/pose_estimation/sample_images.npy").squeeze().astype(np.uint8)
-    images = preprocess_images(img_arr).to(device)
-    print(f"Preprocessed images shape: {images.shape}")
-
-    print("Running inference...")
-    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-
-    with torch.no_grad():
-        with torch.cuda.amp.autocast(dtype=dtype):
-            predictions = model(images)
     
-
-    print("Converting pose encoding to extrinsic and intrinsic matrices...")
-    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-    predictions["extrinsic"] = extrinsic
-    predictions["intrinsic"] = intrinsic
+    # frames = np.load("/root/visionTool/pose_estimation/sample_images.npy")
     
-    world_points = predictions["world_points"].squeeze(0).detach().cpu().numpy().reshape(-1, 3)
-    colors = predictions["images"].squeeze(0).reshape(-1, 2, 3, 1).detach().cpu().numpy().reshape(-1, 3)
-    template_pc = np.concatenate((world_points, colors), axis=1)
-    np.save("/root/visionTool/pose_estimation/demo_pc.npy", template_pc)
-
-    print("Processing model outputs...")
-    for key in predictions.keys():
-        if isinstance(predictions[key], torch.Tensor):
-            predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension and convert to numpy
-
-    if args.use_point_map:
-        print("Visualizing 3D points from point map")
-    else:
-        print("Visualizing 3D points by unprojecting depth map by cameras")
-
-    if args.mask_sky:
-        print("Sky segmentation enabled - will filter out sky points")
-
-    print("Starting viser visualization...")
-
-    viser_server = viser_wrapper(
-        predictions,
-        port=args.port,
-        init_conf_threshold=args.conf_threshold,
-        use_point_map=args.use_point_map,
-        background_mode=args.background_mode,
-        mask_sky=args.mask_sky,
-        image_folder=args.image_folder,
-    )
-    print("Visualization complete")
-
-
-if __name__ == "__main__":
-    main()
+    # save_numpy_array_as_mp4("/root/visionTool/pose_estimation/test.mp4", frames)
+    
+    
+    

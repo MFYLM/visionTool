@@ -35,6 +35,7 @@ class PointCloudPredictor:
         self.device = device
         self.dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     
+    @torch.no_grad()
     def downsample_point_cloud(self, point_cloud: np.ndarray, num_points: int) -> np.ndarray:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(point_cloud[:, :3])
@@ -44,13 +45,12 @@ class PointCloudPredictor:
         return np.concatenate((coord, color), axis=1)
         
     @torch.no_grad()
-    def predict(self, image: np.ndarray, num_points: int) -> np.ndarray:
-        print("Processing image...")
+    def predict(self, image: np.ndarray, num_points: Optional[int] = None) -> np.ndarray:
         image = preprocess_images(image).to(self.device)
-        print("Running inference...")
-        with torch.cuda.amp.autocast(dtype=self.dtype):
+        
+        with torch.amp.autocast("cuda", dtype=self.dtype):
             predictions = self.model(image)
-            
+        
         # Convert pose encoding to extrinsic and intrinsic
         extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], image.shape[-2:])
         predictions["extrinsic"] = extrinsic
@@ -60,10 +60,10 @@ class PointCloudPredictor:
         pred_images = predictions["images"]  # (S, 3, H, W)
         world_points_map = predictions["world_points"]  # (S, H, W, 3)
         conf_map = predictions["world_points_conf"]  # (S, H, W)
-
+        
         depth_map = predictions["depth"]  # (S, H, W, 1)
         depth_conf = predictions["depth_conf"]  # (S, H, W)
-
+        
         extrinsics_cam = predictions["extrinsic"]  # (S, 3, 4)
         intrinsics_cam = predictions["intrinsic"]  # (S, 3, 3)
         
@@ -73,9 +73,28 @@ class PointCloudPredictor:
         final_pc = np.concatenate((world_points, colors), axis=1)
         
         # downsample point cloud if needed
+        if num_points is None:
+            num_points = final_pc.shape[0]
         if num_points < final_pc.shape[0]:
-            print("Downsampling point cloud...")
             final_pc = self.downsample_point_cloud(final_pc, num_points)
         
-        return final_pc
+        for key in predictions.keys():
+            if isinstance(predictions[key], torch.Tensor):
+                predictions[key] = predictions[key].cpu().numpy().squeeze(0)
         
+        return final_pc, predictions
+
+
+
+if __name__ == "__main__":
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # predictor = PointCloudPredictor(device)
+    
+    from PIL import Image
+    
+    images = np.load("/root/visionTool/pose_estimation/sample_images.npy")
+    # num_frame = images.shape[0]
+    # Image.fromarray(images[1]).save('/root/visionTool/pose_estimation/input_img.png')
+    # img = images[1][np.newaxis, ...]
+    # pcd = predictor.predict(image=img)
+    # np.save(f"/root/visionTool/pose_estimation/full_pc_{1}.npy", pcd)
