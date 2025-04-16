@@ -82,6 +82,7 @@ def viser_wrapper(
     background_mode: bool = False,
     mask_sky: bool = False,
     image_folder: str = None,
+    ply_file: str = None
 ):
     """
     Visualize predicted 3D points and camera poses with viser.
@@ -108,25 +109,40 @@ def viser_wrapper(
 
     server = viser.ViserServer(host="0.0.0.0", port=port)
     server.gui.configure_theme(titlebar_content=None, control_layout="collapsible")
+    
+    
+    # add mesh
+    if ply_file:
+        import trimesh
+        mesh = trimesh.load(ply_file)
+        vertices = np.array(mesh.vertices)   # (N, 3)
+        print(f"Number of vertices: {len(vertices)}")
+        faces = np.array(mesh.faces)
+        
+        server.add_mesh(
+            name="my_mesh",
+            vertices=vertices,
+            faces=faces,
+        )
 
     # Unpack prediction dict
     images = pred_dict["images"]  # (S, 3, H, W)
     world_points_map = pred_dict["world_points"]  # (S, H, W, 3)
     conf_map = pred_dict["world_points_conf"]  # (S, H, W)
 
-    depth_map = pred_dict["depth"]  # (S, H, W, 1)
-    depth_conf = pred_dict["depth_conf"]  # (S, H, W)
+    # depth_map = pred_dict["depth"]  # (S, H, W, 1)
+    # depth_conf = pred_dict["depth_conf"]  # (S, H, W)
 
     extrinsics_cam = pred_dict["extrinsic"]  # (S, 3, 4)
     intrinsics_cam = pred_dict["intrinsic"]  # (S, 3, 3)
 
     # Compute world points from depth if not using the precomputed point map
-    if not use_point_map:
-        world_points = unproject_depth_map_to_point_map(depth_map, extrinsics_cam, intrinsics_cam)
-        conf = depth_conf
-    else:
-        world_points = world_points_map
-        conf = conf_map
+    # if not use_point_map:
+    #     world_points = unproject_depth_map_to_point_map(depth_map, extrinsics_cam, intrinsics_cam)
+    #     conf = depth_conf
+    # else:
+    world_points = world_points_map
+    conf = conf_map
 
     # Apply sky segmentation if enabled
     if mask_sky and image_folder is not None:
@@ -214,15 +230,10 @@ def viser_wrapper(
                     client.camera.position = frame.position
 
         img_ids = range(S)
-        T_world_poses = closed_form_inverse_se3(poses)
-        for img_id in tqdm(img_ids):
+        img_id = 0
+        for img_id in tqdm(img_ids):            
             cam2world_3x4 = extrinsics[img_id]
-            pose = T_world_poses[img_id][:3, :]
             T_world_camera = viser_tf.SE3.from_matrix(cam2world_3x4)
-            
-            # FIXME: unit problem? milimeter or centimeter?
-            pose[..., -1] -= scene_center * 10
-            T_world_pose = viser_tf.SE3.from_matrix(pose)
 
             # Add a small frame axis
             frame_axis = server.scene.add_frame(
@@ -233,19 +244,29 @@ def viser_wrapper(
                 axes_radius=0.002,
                 origin_radius=0.002,
             )
-            
-            # plot object frame
-            obj_frame = server.scene.add_frame(
-                "object_pose",
-                wxyz=T_world_pose.rotation().wxyz,
-                position=T_world_pose.translation(),
-                axes_length=0.15,  # Larger than camera frames
-                axes_radius=0.005,
-                origin_radius=0.007,
-            )
-            
             frames.append(frame_axis)
-
+            
+            # print(f"pose position: {T_world_pose.translation()}")
+            # print(f"camera position: {T_world_camera.translation()}")
+            # print(f"scene center: {scene_center}")
+            
+            if poses is not None:
+                # get pose in world coord
+                for idx in range(len(poses)):
+                    pose = poses[idx][:3, :]
+                    pose[..., -1] = pose[..., -1] - scene_center
+                    T_world_pose = viser_tf.SE3.from_matrix(pose)
+                                        
+                    # plot object frame
+                    obj_frame = server.scene.add_frame(
+                        f"object_pose_{idx}",
+                        wxyz=T_world_pose.rotation().wxyz,
+                        position=T_world_pose.translation(),
+                        axes_length=0.15,  # Larger than camera frames
+                        axes_radius=0.005,
+                    )
+                    frames.append(obj_frame)
+            
             # Convert the image for the frustum
             img = images_[img_id]  # shape (3, H, W)
             img = (img.transpose(1, 2, 0) * 255).astype(np.uint8)
@@ -326,6 +347,26 @@ def viser_wrapper(
     return server
 
 
+def my_viser(points, colors):
+    server = viser.ViserServer(host="0.0.0.0", port=8080)
+
+    # Add point cloud to viewer
+    server.scene.add_point_cloud(
+        name="my_pointcloud",
+        points=points,
+        colors=colors,
+        point_shape="circle",
+        point_size=0.001
+    )
+
+    # Keep server running (non-blocking for interactive use)
+    while True:
+        time.sleep(0.01)
+        
+    return server
+
+
+
 if __name__ == "__main__":        
     points = np.load("/root/visionTool/pose_estimation/demo_pc.npy")
     print(points.shape)
@@ -342,6 +383,3 @@ if __name__ == "__main__":
     # frames = np.load("/root/visionTool/pose_estimation/sample_images.npy")
     
     # save_numpy_array_as_mp4("/root/visionTool/pose_estimation/test.mp4", frames)
-    
-    
-    

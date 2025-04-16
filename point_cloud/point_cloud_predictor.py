@@ -45,7 +45,7 @@ class PointCloudPredictor:
         return np.concatenate((coord, color), axis=1)
         
     @torch.no_grad()
-    def predict(self, image: np.ndarray, num_points: Optional[int] = None) -> np.ndarray:
+    def predict(self, image: np.ndarray, num_points: Optional[int] = None, is_filter: bool = False) -> np.ndarray:
         image = preprocess_images(image).to(self.device)
         
         with torch.amp.autocast("cuda", dtype=self.dtype):
@@ -60,7 +60,7 @@ class PointCloudPredictor:
         pred_images = predictions["images"]  # (S, 3, H, W)
         world_points_map = predictions["world_points"]  # (S, H, W, 3)
         conf_map = predictions["world_points_conf"]  # (S, H, W)
-        
+                
         depth_map = predictions["depth"]  # (S, H, W, 1)
         depth_conf = predictions["depth_conf"]  # (S, H, W)
         
@@ -68,9 +68,36 @@ class PointCloudPredictor:
         intrinsics_cam = predictions["intrinsic"]  # (S, 3, 3)
         
         # get point cloud from predictions, adding color (RGB) info
-        world_points = predictions["world_points"].squeeze(0).detach().cpu().numpy().reshape(-1, 3)
-        colors = predictions["images"].squeeze(0).reshape(-1, 2, 3, 1).detach().cpu().numpy().reshape(-1, 3)
-        final_pc = np.concatenate((world_points, colors), axis=1)
+        world_points = predictions["world_points"].squeeze(0).detach().cpu().numpy()
+        colors = predictions["images"].squeeze(0).permute(0, 2, 3, 1).detach().cpu().numpy()
+        conf_map = conf_map.squeeze(0).detach().cpu().numpy()
+        S, H, W, _ = world_points.shape
+        if is_filter:
+            filtered_world_points = []
+            filtered_colors = []
+            filtered_conf_map = []
+            # filter out invalid points
+            for s in range(S):
+                pred_img = colors[s]
+                valid_mask = ~np.all(pred_img == 0, axis=-1)
+                world_points_filtered = world_points[s][valid_mask, :]
+                filtered_world_points.append(world_points_filtered)
+                color_filtered = colors[s][valid_mask, :]
+                filtered_colors.append(color_filtered)
+                filtered_conf_map.append(conf_map[s][valid_mask])
+            
+            # TODO: add visualization for filtered points
+            # import ipdb; ipdb.set_trace()
+            # predictions["world_points"] = np.array(filtered_world_points).squeeze(0)
+            # predictions["depth"] = depth_map[s][valid_mask]
+            
+            filtered_world_points, filtered_colors = np.array(filtered_world_points).squeeze(0), np.array(filtered_colors).squeeze(0)
+            final_pc = np.concatenate((filtered_world_points, filtered_colors), axis=1)
+
+        else:
+            world_points = world_points.reshape(-1, 3)
+            colors = colors.reshape(-1, 3)
+            final_pc = np.concatenate((world_points, colors), axis=1)
         
         # downsample point cloud if needed
         if num_points is None:
