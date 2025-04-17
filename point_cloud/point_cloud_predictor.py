@@ -3,7 +3,7 @@ import numpy as np
 import sys
 sys.path.append("/root/visionTool/point_cloud/")
 from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import preprocess_images
+from vggt.utils.load_fn import preprocess_images, preprocess_gray_images
 from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.visual_util import predictions_to_glb
@@ -45,7 +45,7 @@ class PointCloudPredictor:
         return np.concatenate((coord, color), axis=1)
         
     @torch.no_grad()
-    def predict(self, image: np.ndarray, num_points: Optional[int] = None, is_filter: bool = False) -> np.ndarray:
+    def predict(self, image: np.ndarray, num_points: Optional[int] = None, mask: Optional[np.ndarray] = None) -> np.ndarray:
         image = preprocess_images(image).to(self.device)
         
         with torch.amp.autocast("cuda", dtype=self.dtype):
@@ -72,28 +72,22 @@ class PointCloudPredictor:
         colors = predictions["images"].squeeze(0).permute(0, 2, 3, 1).detach().cpu().numpy()
         conf_map = conf_map.squeeze(0).detach().cpu().numpy()
         S, H, W, _ = world_points.shape
-        if is_filter:
+        if mask is not None:
+            processed_mask = preprocess_gray_images(mask).to(self.device)            
             filtered_world_points = []
             filtered_colors = []
-            filtered_conf_map = []
             # filter out invalid points
             for s in range(S):
-                pred_img = colors[s]
-                valid_mask = ~np.all(pred_img == 0, axis=-1)
+                processed_mask = processed_mask[s].detach().cpu().numpy()
+                valid_mask = ~np.all(processed_mask == 0, axis=0)
                 world_points_filtered = world_points[s][valid_mask, :]
-                filtered_world_points.append(world_points_filtered)
                 color_filtered = colors[s][valid_mask, :]
+                filtered_world_points.append(world_points_filtered)
                 filtered_colors.append(color_filtered)
-                filtered_conf_map.append(conf_map[s][valid_mask])
             
-            # TODO: add visualization for filtered points
-            # import ipdb; ipdb.set_trace()
-            # predictions["world_points"] = np.array(filtered_world_points).squeeze(0)
-            # predictions["depth"] = depth_map[s][valid_mask]
-            
-            filtered_world_points, filtered_colors = np.array(filtered_world_points).squeeze(0), np.array(filtered_colors).squeeze(0)
+            filtered_world_points, filtered_colors = \
+                        np.array(filtered_world_points).squeeze(0), np.array(filtered_colors).squeeze(0)
             final_pc = np.concatenate((filtered_world_points, filtered_colors), axis=1)
-
         else:
             world_points = world_points.reshape(-1, 3)
             colors = colors.reshape(-1, 3)
@@ -103,8 +97,10 @@ class PointCloudPredictor:
         if num_points is None:
             num_points = final_pc.shape[0]
         if num_points < final_pc.shape[0]:
+            print(f"Downsampling point cloud to {num_points} points...")
             final_pc = self.downsample_point_cloud(final_pc, num_points)
         
+        print("Point cloud predicted!")
         for key in predictions.keys():
             if isinstance(predictions[key], torch.Tensor):
                 predictions[key] = predictions[key].cpu().numpy().squeeze(0)

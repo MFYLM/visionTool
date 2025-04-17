@@ -254,10 +254,12 @@ def viser_wrapper(
                 # get pose in world coord
                 for idx in range(len(poses)):
                     pose = poses[idx][:3, :]
-                    pose[..., -1] = pose[..., -1] - scene_center
+                    # pose[:3, :3] = pose[:3, :3] @ cam2world_3x4[:3, :3].T
+                    # pose[..., -1] = pose[..., -1] - scene_center
                     T_world_pose = viser_tf.SE3.from_matrix(pose)
-                                        
+                    
                     # plot object frame
+                    # FIXME: might be wrong with coordinate transformation?
                     obj_frame = server.scene.add_frame(
                         f"object_pose_{idx}",
                         wxyz=T_world_pose.rotation().wxyz,

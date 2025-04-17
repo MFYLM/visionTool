@@ -10,7 +10,7 @@ from PIL import Image
 from tqdm.auto import tqdm
 from visualizer import viser_wrapper, apply_sky_segmentation, my_viser
 from plyfile import PlyData, PlyElement
-
+import cv2
 
 
 class PosePredictor:
@@ -139,12 +139,8 @@ class PosePredictor:
             if "mask" in results:
                 # import ipdb     
                 # ipdb.set_trace()
-                masked_image = np.multiply(image, results["mask"][:, :, np.newaxis])
-                
-                # Image.fromarray((masked_image).astype(np.uint8)).save("/root/visionTool/pose_estimation/masked_img.png")
-                # Add sequence dimension
-                masked_image = masked_image[np.newaxis, ...]
-                obj_pc, obj_predictions = self.point_cloud_predictor.predict(masked_image, num_points=None, is_filter=True)
+                mask = results["mask"][np.newaxis, ...]
+                obj_pc, obj_predictions = self.point_cloud_predictor.predict(image[np.newaxis, ...], num_points=obj_num_points, mask=mask)
             else:
                 print("Mask not found")
                 
@@ -154,7 +150,7 @@ class PosePredictor:
         # print(f"random point in obj pc: \n{obj_pc[np.random.randint(0, obj_pc.shape[0])]}")
         # Add sequence dimension
         image = image[np.newaxis, ...]
-        scene_pc, scene_predictions = self.point_cloud_predictor.predict(image, num_points=None)
+        scene_pc, scene_predictions = self.point_cloud_predictor.predict(image, num_points=scene_num_points)
         return scene_pc, obj_pc, scene_predictions, obj_predictions
     
     def get_obj_pose(
@@ -188,11 +184,10 @@ class PosePredictor:
                 multimask=multimask
             )
             if obj_pc is None:
-                # No object detected
+                # No object detected under detect mode
                 return None, None, None, None
             # from meter to millimeter
             object_model = obj_pc[..., :3] * 1000   # only need XYZ
-            
         else:
             assert obj_file_path is not None
             scene_pc, obj_pc, scene_predictions, obj_predictions = self.get_obj_and_scene_point_cloud(
@@ -208,15 +203,10 @@ class PosePredictor:
                 all_detections=all_detections,
                 multimask=multimask
             )
-            object_model = obj_file_path
-        
-        # np.save("/root/visionTool/pose_estimation/scene_pc.npy", scene_pc)
-        # np.save("/root/visionTool/pose_estimation/obj_pc.npy", obj_pc)
-        
+            object_model = obj_file_path        
         object_model_type = "point cloud" if isinstance(object_model, np.ndarray) else "mesh"
-        print(f"Estimating object pose with {object_model_type}...")
+        print(f"Estimating object pose with {object_model_type}...")        
         
-        # np.save("/root/visionTool/pose_estimation/scene_pc.npy", scene_pc)
         pose_estimator = PPFModel(object_model, ModelInvertNormals="false")
         scene_pc[..., :3] = scene_pc[..., :3] * 1000   # from meters to millimeters
         poses_ppf, scores_ppf, time_ppf = pose_estimator.find_surface_model(scene_pc, SceneSamplingDist=0.03)
@@ -272,6 +262,24 @@ def scale_ply(input_ply, output_ply, scale_factor):
     
     # Write the scaled PLY file
     new_ply.write(output_ply)
+    
+    
+def read_from_mp4(video_path):
+    cap = cv2.VideoCapture(video_path)
+
+    frames = []
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Optional: Convert to RGB
+        frames.append(frame_rgb)
+
+    cap.release()
+    frames_np = np.stack(frames)
+    return frames_np
+
+    
 
 
 if __name__ == "__main__":
@@ -297,30 +305,30 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    images = np.load("/root/visionTool/pose_estimation/sample_images.npy")
+    images = read_from_mp4('/root/visionTool/pose_estimation/test2.mp4')
     pose_estimator = PosePredictor()
     
     # ply_file = "/root/visionTool/pose_estimation/187_proper.ply"
     # scale_ply('/root/visionTool/pose_estimation/187_cm.ply', ply_file, scale_factor=0.05)
     
-    pred_poses = []
-    num_missing_detect = 0
-    for idx in tqdm(range(len(images) // 2), desc=f"Predicting frames..."):
-        pose, score, scene_predictions, obj_pc = pose_estimator.get_obj_pose(
-            images[idx], 
-            idx,
-            # obj_file_path=ply_file,
-            is_segment=True,
-            scene_num_points=2048, 
-            obj_num_points=1024,
-            text_prompts=["cup"],
-        )
-        if pose is None:
-            pose = np.copy(pred_poses[-1])
-            num_missing_detect += 1
-        pred_poses.append(pose)
-    print(f"num missing detect: {num_missing_detect}")
-    np.save(f"/root/visionTool/pose_estimation/pred_poses_with_ply.npy", pred_poses)
+    # pred_poses = []
+    # num_missing_detect = 0
+    # for idx in tqdm(range(len(images) // 2), desc=f"Predicting frames..."):
+    #     pose, score, scene_predictions, obj_pc = pose_estimator.get_obj_pose(
+    #         images[idx], 
+    #         idx,
+    #         # obj_file_path=ply_file,
+    #         is_segment=True,
+    #         scene_num_points=2048, 
+    #         obj_num_points=1024,
+    #         text_prompts=["charging plug on the table"],
+    #     )
+    #     if pose is None:
+    #         pose = np.copy(pred_poses[-1])
+    #         num_missing_detect += 1
+    #     pred_poses.append(pose)
+    # print(f"num missing detect: {num_missing_detect}")
+    # np.save(f"/root/visionTool/pose_estimation/pred_poses_charger_head.npy", pred_poses)
     
     # print(f"predicted poses: \n {pred_poses}")
     
@@ -332,11 +340,11 @@ if __name__ == "__main__":
         is_segment=True,
         scene_num_points=2048,
         obj_num_points=1024,
-        text_prompts=["cup"],
+        text_prompts=["charging plug on the table"],
     )
     
     init_pos = np.array([
-        -0.04924557,  0.1242524,   0.99039423
+        0, 0, 0
     ])
     init_rot = np.eye(3)
     init_pose_matrix = np.concatenate([init_rot, init_pos[:, np.newaxis]], axis=1)
@@ -344,7 +352,7 @@ if __name__ == "__main__":
     
     
     # # compute delta transformations
-    poses = np.load("/root/visionTool/pose_estimation/pred_poses_with_ply.npy")
+    poses = np.load("/root/visionTool/pose_estimation/pred_poses_charger_head.npy")
     # import ipdb; ipdb.set_trace()
     # from milimeters to meters
     poses[:, :3, 3] /= 1000
@@ -361,20 +369,20 @@ if __name__ == "__main__":
         cur_pose = cur_pose @ delta_poses[i]
         all_poses.append(cur_pose.copy())
     all_poses = np.stack(all_poses, axis=0)
+    np.save("/root/visionTool/pose_estimation/all_poses.npy", all_poses)
     
-    print(f"all poses:\n {all_poses}")
+    # print(f"all poses:\n {all_poses}")
+    # import ipdb; ipdb.set_trace()
+    # viser_server = viser_wrapper(
+    #     scene_predictions,
+    #     port=args.port,
+    #     init_conf_threshold=args.conf_threshold,
+    #     use_point_map=args.use_point_map,
+    #     background_mode=args.background_mode,
+    #     mask_sky=args.mask_sky,
+    #     image_folder=args.image_folder,
+    #     poses=all_poses,
+    # )
     
-    viser_server = viser_wrapper(
-        scene_predictions,
-        port=args.port,
-        init_conf_threshold=args.conf_threshold,
-        use_point_map=args.use_point_map,
-        background_mode=args.background_mode,
-        mask_sky=args.mask_sky,
-        image_folder=args.image_folder,
-        poses=all_poses,
-        # ply_file=ply_file,
-    )
-    
-    # server = my_viser(obj_pc[:, :3], obj_pc[:, 3:])
+    server = my_viser(obj_pc[:, :3], obj_pc[:, 3:])
     
