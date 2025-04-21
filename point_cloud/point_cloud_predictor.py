@@ -60,7 +60,7 @@ class PointCloudPredictor:
         pred_images = predictions["images"]  # (S, 3, H, W)
         world_points_map = predictions["world_points"]  # (S, H, W, 3)
         conf_map = predictions["world_points_conf"]  # (S, H, W)
-                
+        
         depth_map = predictions["depth"]  # (S, H, W, 1)
         depth_conf = predictions["depth_conf"]  # (S, H, W)
         
@@ -73,7 +73,7 @@ class PointCloudPredictor:
         conf_map = conf_map.squeeze(0).detach().cpu().numpy()
         S, H, W, _ = world_points.shape
         if mask is not None:
-            processed_mask = preprocess_gray_images(mask).to(self.device)            
+            processed_mask = preprocess_gray_images(mask).to(self.device)
             filtered_world_points = []
             filtered_colors = []
             # filter out invalid points

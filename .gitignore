@@ -13,4 +13,6 @@
 *.zip
 *.png
 
+/pose_estimation/realsense_recordings/
+
 /data

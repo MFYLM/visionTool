@@ -349,8 +349,9 @@ def viser_wrapper(
     return server
 
 
-def my_viser(points, colors):
+def my_viser(points, colors, poses=None):
     server = viser.ViserServer(host="0.0.0.0", port=8080)
+    server.gui.configure_theme(titlebar_content=None, control_layout="collapsible")
 
     # Add point cloud to viewer
     server.scene.add_point_cloud(
@@ -360,6 +361,18 @@ def my_viser(points, colors):
         point_shape="circle",
         point_size=0.001
     )
+    
+    if poses is not None: 
+        for i in range(len(poses)):
+            pose = poses[i][:3, :]
+            T_world_pose = viser_tf.SE3.from_matrix(pose)
+            obj_frame = server.scene.add_frame(
+                f"object_pose_{i}",
+                wxyz=T_world_pose.rotation().wxyz,
+                position=T_world_pose.translation(),
+                axes_length=0.15,  # Larger than camera frames
+                axes_radius=0.005,
+            )
 
     # Keep server running (non-blocking for interactive use)
     while True:
