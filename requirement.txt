@@ -11,7 +11,6 @@ huggingface_hub # ==0.25.2
 torch==2.1.0
 torchvision==0.16.0  # Update to match PyTorch 2.1.0
 matplotlib==3.7.1
-scipy==1.10.1
 tqdm==4.65.0
 imageio==2.31.1
 imageio-ffmpeg==0.4.8
@@ -23,9 +22,22 @@ tensorboard
 # INSTALL monst3r
 # minimal requirements for inference
 roma
-gradio
 gdown
 pyglet<2
 
 # for camera trajectory
 evo
+
+
+# vggt
+safetensors
+gradio==5.17.1
+viser==0.2.23
+hydra-core
+omegaconf
+opencv-python
+scipy
+onnxruntime
+requests
+trimesh
+matplotlib
