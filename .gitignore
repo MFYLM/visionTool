@@ -16,3 +16,7 @@
 /pose_estimation/realsense_recordings/
 
 /data
+
+
+*.ipynb
+*.ipynb_checkpoints

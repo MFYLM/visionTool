@@ -80,7 +80,7 @@ class OwlV2SAM:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         pil_image = Image.fromarray(image)
-
+        
         # Detect with OWLv2
         inputs = self.owlv2_processor(
             text=text_prompts, images=pil_image, return_tensors="pt"
@@ -94,7 +94,7 @@ class OwlV2SAM:
         results = self.owlv2_processor.post_process_object_detection(
             outputs=outputs, target_sizes=target_sizes, threshold=detection_threshold
         )[0]
-
+        
         if len(results["boxes"]) == 0:
             return {
                 "detected": False,

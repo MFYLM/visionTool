@@ -3,7 +3,7 @@ sys.path.append("/root/visionTool/")
 from point_cloud.point_cloud_predictor import PointCloudPredictor
 from detect_segmentation.det_seg import OwlV2SAM
 import torch
-from halcon_wrapper import PPFModel
+# from halcon_wrapper import PPFModel
 import numpy as np
 from typing import Literal, Optional, List, Union
 from PIL import Image
@@ -11,13 +11,15 @@ from tqdm.auto import tqdm
 from visualizer import viser_wrapper, apply_sky_segmentation, my_viser
 from plyfile import PlyData, PlyElement
 import cv2
+import glob
 import json
+from depth_estimation.depth_predictor import DepthPredictor
 
 
 class PosePredictor:
     def __init__(
         self,
-        seg_model_checkpoint: str = "/root/visionTool/detect_segmentation/checkpoints/sam_vit_b_01ec64.pth",
+        seg_model_checkpoint: str = "/root/visionTool/detect_segmentation/segment_anything/checkpoints/sam_vit_b_01ec64.pth",
         point_cloud_model_name: str = "vggt",
         device: str = "cuda",
     ):
@@ -28,7 +30,7 @@ class PosePredictor:
     def seg_single_image(
         self,
         image: np.ndarray,
-        save_mask_path: str,
+        # save_mask_path: str,
         mode: Literal["detect", "point"] = "detect",
         threshold: float = 0.3,
         all_detections: bool = False,
@@ -47,7 +49,7 @@ class PosePredictor:
                 detection_threshold=threshold,
                 return_all_detections=all_detections,
             )
-
+            
             # Print detection results
             if results["detected"]:
                 if "detections" in results:
@@ -60,13 +62,8 @@ class PosePredictor:
                     print(
                         f"Detected {results['text_prompt']} with confidence {results['score']:.3f}"
                     )
-                    # save mask
-                    mask_image = (results["mask"] * 255).astype(np.uint8)
-                    gray_img = Image.fromarray(mask_image, mode="L")
-                    gray_img.save(save_mask_path)
-                
             else:
-                print("No objects detected")
+                print(f"{results['message']}")
 
         elif mode == "point":
             # Check if points are provided
@@ -109,9 +106,8 @@ class PosePredictor:
     def get_obj_and_scene_point_cloud(
         self,
         image: np.ndarray,
-        img_idx: int,
-        scene_num_points: int,
-        obj_num_points: int,
+        scene_num_points: Optional[int] = None,
+        obj_num_points: Optional[int] = None,
         is_segment: bool = False,
         seg_mode: Literal["detect", "point"] = "detect",
         text_prompts: Optional[List[str]] = None,
@@ -124,10 +120,10 @@ class PosePredictor:
     ) -> tuple[np.ndarray]:
         obj_pc = None
         obj_predictions = None
+        seg_results = None
         if is_segment:
-            results = self.seg_single_image(
+            seg_results = self.seg_single_image(
                 image,
-                save_mask_path=f"/root/visionTool/pose_estimation/seg_results/mask_{img_idx}.png",
                 mode=seg_mode,
                 threshold=threshold,
                 all_detections=all_detections,
@@ -137,13 +133,12 @@ class PosePredictor:
                 multimask=multimask,
             )
             # mask out background from images
-            if "mask" in results:
-                # import ipdb; ipdb.set_trace()
-                mask = results["mask"][np.newaxis, ...]
+            if "mask" in seg_results:
+                mask = seg_results["mask"][np.newaxis, ...]
                 obj_pc, obj_predictions = self.point_cloud_predictor.predict(image[np.newaxis, ...], num_points=obj_num_points, mask=mask)
             else:
                 print("Mask not found")
-                
+        
         # Generate point clouds for object and scene
         print("Predicting scene point clouds...")
         
@@ -152,7 +147,43 @@ class PosePredictor:
         image = image[np.newaxis, ...]
         if scene_pc is None:
             scene_pc, scene_predictions = self.point_cloud_predictor.predict(image, num_points=scene_num_points)
-        return scene_pc, obj_pc, # scene_predictions, obj_predictions
+        return scene_pc, obj_pc, scene_predictions, seg_results
+    
+    def get_object_center(
+        self,
+        image: np.ndarray,
+        depth: np.ndarray,
+        mask: Optional[np.ndarray] = None,
+        threshold: float = 0.3,
+        seg_mode: Literal["detect", "point"] = "detect",
+        text_prompts: Optional[List[str]] = None,
+        points: Optional[List[List[int]]] = None, # List of [x, y] coordinates
+        point_labels: Optional[List[int]] = None, # 1 for foreground, 0 for background
+    ):
+        _, predictions = self.point_cloud_predictor.predict(image[np.newaxis, ...], num_points=1024)
+        extrinsic, intrinsic = predictions["extrinsic"], predictions["intrinsic"]
+        
+        if mask is None:
+            results = self.seg_single_image(
+                image,
+                save_mask_path=f"/root/visionTool/pose_estimation/seg_results/mask.png",
+                mode=seg_mode,
+                threshold=threshold,
+                text_prompts=text_prompts,
+                points=points,
+                point_labels=point_labels,
+            )
+
+        # obtain object center 3d
+        mask = mask / mask.max()
+        rows, cols = np.where(mask == 1)
+        center_y = np.mean(rows)
+        center_x = np.mean(cols)
+        center_2d = [int(center_x), int(center_y)]
+        center_3d = get_center_3d(center_2d, depth, intrinsic.squeeze())
+        
+        return center_2d, center_3d, extrinsic, intrinsic
+            
     
     def get_obj_pose(
         self,
@@ -175,7 +206,6 @@ class PosePredictor:
             # scene_pc, obj_pc, scene_predictions, obj_predictions = self.get_obj_and_scene_point_cloud(
             scene_pc, obj_pc = self.get_obj_and_scene_point_cloud(
                 image,
-                img_idx,
                 scene_num_points=scene_num_points,
                 obj_num_points=obj_num_points,
                 is_segment=True,
@@ -197,7 +227,6 @@ class PosePredictor:
             # scene_pc, obj_pc, scene_predictions, obj_predictions = self.get_obj_and_scene_point_cloud(
             scene_pc, obj_pc = self.get_obj_and_scene_point_cloud(
                 image,
-                img_idx,
                 scene_num_points=scene_num_points,
                 obj_num_points=obj_num_points,
                 is_segment=False,
@@ -213,13 +242,14 @@ class PosePredictor:
         object_model_type = "point cloud" if isinstance(object_model, np.ndarray) else "mesh"
         print(f"Estimating object pose with {object_model_type}...")
         
-        pose_estimator = PPFModel(object_model, ModelInvertNormals="false")
-        # scene_pc[..., :3] = scene_pc[..., :3] * 1000   # from meters to millimeters
-        scene_pc[..., :3] = scene_pc[..., :3]  # from meters to millimeters
-        poses_ppf, scores_ppf, time_ppf = pose_estimator.find_surface_model(scene_pc, SceneSamplingDist=0.03)
-        pose_hypos = poses_ppf[0]  # take the most voted one
-        # import ipdb; ipdb.set_trace()
-        return pose_hypos, scores_ppf, obj_pc # scene_predictions
+        # pose_estimator = PPFModel(object_model, ModelInvertNormals="false")
+        # # scene_pc[..., :3] = scene_pc[..., :3] * 1000   # from meters to millimeters
+        # scene_pc[..., :3] = scene_pc[..., :3]  # from meters to millimeters
+        # poses_ppf, scores_ppf, time_ppf = pose_estimator.find_surface_model(scene_pc, SceneSamplingDist=0.03)
+        # pose_hypos = poses_ppf[0]  # take the most voted one
+        # # import ipdb; ipdb.set_trace()
+        # return pose_hypos, scores_ppf, obj_pc # scene_predictions
+        return None
     
     
 def compute_delta_transform(T1, T2):
@@ -321,124 +351,84 @@ def rgbd_to_point_cloud(rgb, depth, fx, fy, cx, cy):
     return np.concatenate((points, colors), axis=1)
 
 
+def create_masks(loc_2d, depth_img, img_center=False):
+    if img_center:
+        loc_2d = [[depth_img.shape[0] // 2, depth_img.shape[1] // 2]]
+    else:
+        loc_2d = np.array(loc_2d)
+    
+    mask = np.zeros(depth_img.shape[:2], dtype=np.uint8)
+    for point in loc_2d:
+        if 0 <= point[0] < mask.shape[0] and 0 <= point[1] < mask.shape[1]:
+            mask[point[0], point[1]] = 255
+    return mask
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="VGGT demo with viser for 3D visualization")
-    parser.add_argument(
-        "--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images"
-    )
-    parser.add_argument("--use_point_map", action="store_true", help="Use point map instead of depth-based points")
-    parser.add_argument("--background_mode", action="store_true", help="Run the viser server in background mode")
-    parser.add_argument("--port", type=int, default=8080, help="Port number for the viser server")
-    parser.add_argument(
-        "--conf_threshold", type=float, default=25.0, help="Initial percentage of low-confidence points to filter out"
-    )
-    parser.add_argument("--mask_sky", action="store_true", help="Apply sky segmentation to filter out sky points")
+
+def get_center_3d(center_2d: np.ndarray, depth: np.ndarray, intrinsic_matrix: np.ndarray):
+    fx = intrinsic_matrix[0, 0]
+    fy = intrinsic_matrix[1, 1]
+    cx = intrinsic_matrix[0, 2]
+    cy = intrinsic_matrix[1, 2]
     
-    args = parser.parse_args()
+    u, v = center_2d
+    uu, vv = int(u), int(v)
+    z = depth[vv, uu]
     
-    # images = read_from_mp4('/root/visionTool/pose_estimation/test2.mp4')
+    # back‑project
+    x = (uu - cx) * z / fx
+    y = (vv - cy) * z / fy
     
-    images = read_from_mp4('/root/visionTool/pose_estimation/realsense_recordings/recording_1/color.mp4')
-    depth_maps = np.load('/root/visionTool/pose_estimation/realsense_recordings/recording_1/depth_frames.npz')["frames"]
-    fx, fy, cx, cy = read_camera_json('/root/visionTool/pose_estimation/realsense_recordings/recording_1/camera_intrinsics.json')
+    points = np.stack((x, y, z))
+    return points
+
+
+if __name__ == "__main__":        
+    # image_dir = "/root/FoundationPose/demo_data/mustard0/rgb"
+    # image_paths = glob.glob(f"{image_dir}/*.png")
     
-    # import ipdb; ipdb.set_trace()
+    # img = Image.open(image_paths[0])
+    # if img.mode != 'RGB':
+    #     img = img.convert('RGB')
+    # img = np.array(img)
     
+    
+    # # depth = np.load("/root/visionTool/depth_estimation/depth.npy")
+    # # mask = Image.open("/root/FoundationPose/demo_data/mustard0/masks/1581120424100262102.png")
+    # mask = np.array(mask)
+    # obj_center_2d, obj_center_3d, extrinsic, intrinsic = pose_estimator.get_object_center(img, depth, mask)
+    
+    # # print(f"obj_center_2d: {obj_center_2d}")
+    # # print(f"obj_center_3d: {obj_center_3d}")
+        
+    # video_path = "/root/visionTool/pose_estimation/color.mp4"
+    # frames = read_from_mp4(video_path)
+    # np.save("/root/visionTool/pose_estimation/frames.npy", frames)
+    
+    
+    frames = np.load("/root/visionTool/process_data/frames.npy")
+    frame = frames[0]
     pose_estimator = PosePredictor()
     
-    pred_poses = []
-    num_missing_detect = 0
-    for idx in tqdm(range(10, 100), desc=f"Predicting frames..."):
-        scene_pc = rgbd_to_point_cloud(images[idx], depth_maps[idx], fx, fy, cx, cy)
-        pose, score, obj_pc = pose_estimator.get_obj_pose(
-            images[idx], 
-            idx,
-            # obj_file_path=ply_file,
-            is_segment=True,
-            scene_num_points=2048, 
-            obj_num_points=None,
-            text_prompts=["blue box on the table"],
-            scene_pc=scene_pc
-        )
-        if pose is None:
-            pose = np.copy(pred_poses[-1])
-            num_missing_detect += 1
-        pred_poses.append(pose)
-    print(f"num missing detect: {num_missing_detect}")
-    np.save(f"/root/visionTool/pose_estimation/pred_poses_plug_realsense.npy", pred_poses)
-    print(f"predicted poses: \n {pred_poses}")
-    
-    
-    # FIXME: object segmentation is not working properly
-    idx = 15
-    scene_pc = rgbd_to_point_cloud(images[idx], depth_maps[idx], fx, fy, cx, cy)
-    # print(f"scene_pc shape: {scene_pc.shape}")
-    # import ipdb; ipdb.set_trace()
-    
-    # pose, score, obj_pc = pose_estimator.get_obj_pose(
-    #     images[idx],
-    #     img_idx=0,
-    #     # obj_file_path="/root/visionTool/pose_estimation/187_mm.ply",
-    #     is_segment=True,
-    #     scene_num_points=None,
-    #     obj_num_points=None,
-    #     text_prompts=["blue box on the table"],
-    #     scene_pc=scene_pc
+    # results = pose_estimator.seg_single_image(
+    #     frame,
+    #     mode="detect",
+    #     threshold=0.3,
+    #     text_prompts=["brown cup on the table"],
     # )
     
-    init_pos = np.array([
-        0, 0, 0
-    ])
-    init_rot = np.eye(3)
-    init_pose_matrix = np.concatenate([init_rot, init_pos[:, np.newaxis]], axis=1)
-    init_pose_matrix = np.concatenate([init_pose_matrix, np.array([[0, 0, 0, 1]])], axis=0)
+    # mask_image = (results["mask"] * 255).astype(np.uint8)
+    # gray_img = Image.fromarray(mask_image, mode="L")
+    # gray_img.save(save_mask_path)
+    
+    # bbox = results["box"]
+    # print(f"bbox: {bbox}")
+    # np.save("/root/visionTool/pose_estimation/bbox.npy", bbox)
+    
+    scene_pc, obj_pc, scene_predictions, seg_results = pose_estimator.get_obj_and_scene_point_cloud(
+        frame,
+        is_segment=True,
+        text_prompts=["brown cup on the table"],
+    )
     
     
-    # # compute delta transformations
-    # poses = np.load("/root/visionTool/pose_estimation/pred_poses_plug_realsense.npy")
-    # poses[:, :3, 3] /= 1000   # from milimeters to meters
-    # print(f"poses:\n {poses}")
-    # delta_poses = []
-    # for i in range(1, poses.shape[0]):
-    #     delta_poses.append(compute_delta_translation(poses[i - 1], poses[i]))
-    # delta_poses = np.stack(delta_poses, axis=0)
-    # # np.save("/root/visionTool/pose_estimation/delta_poses.npy", delta_poses)
-    
-    # # delta_poses = np.load("/root/visionTool/pose_estimation/delta_poses.npy")
-    # all_poses = [init_pose_matrix]
-    # cur_pose = init_pose_matrix
-    # for i in range(delta_poses.shape[0]):
-    #     delta_pose = delta_poses[i]
-    #     # delta_pose[:3, :3] = np.eye(3)
-    #     # delta_pose[:3, 3] /= 50
-    #     cur_pose = delta_pose @ cur_pose
-    #     all_poses.append(cur_pose.copy())
-    # all_poses = np.stack(all_poses, axis=0)
-    # # np.save("/root/visionTool/pose_estimation/all_poses.npy", all_poses)
-    
-    # print(f"all poses:\n {all_poses}")
-
-    
-    # import ipdb; ipdb.set_trace()
-    # viser_server = viser_wrapper(
-    #     scene_predictions,
-    #     port=args.port,
-    #     init_conf_threshold=args.conf_threshold,
-    #     use_point_map=args.use_point_map,
-    #     background_mode=args.background_mode,
-    #     mask_sky=args.mask_sky,
-    #     image_folder=args.image_folder,
-    #     poses=all_poses,
-    # )
-    
-    display_poses = []
-    for pred_pose in pred_poses:
-        pred_pose[:3, :3] = np.eye(3)
-        pred_pose[:3, 3] /= 1000
-        display_poses.append(pred_pose)
-    display_poses = np.stack(display_poses, axis=0)
-    
-    server = my_viser(scene_pc[:, :3] / 1000, scene_pc[:, 3:], poses=pred_poses)
     

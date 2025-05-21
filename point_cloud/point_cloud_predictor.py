@@ -10,7 +10,7 @@ from vggt.utils.visual_util import predictions_to_glb
 from typing import Union, List, Optional
 import open3d as o3d
 from tqdm.auto import tqdm
-
+from typing import Tuple, Dict
 
 MODELS = {
     "vggt": VGGT,
@@ -45,7 +45,7 @@ class PointCloudPredictor:
         return np.concatenate((coord, color), axis=1)
         
     @torch.no_grad()
-    def predict(self, image: np.ndarray, num_points: Optional[int] = None, mask: Optional[np.ndarray] = None) -> np.ndarray:
+    def predict(self, image: np.ndarray, num_points: Optional[int] = None, mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Dict]:
         image = preprocess_images(image).to(self.device)
         
         with torch.amp.autocast("cuda", dtype=self.dtype):
@@ -106,6 +106,18 @@ class PointCloudPredictor:
                 predictions[key] = predictions[key].cpu().numpy().squeeze(0)
         
         return final_pc, predictions
+    
+    @torch.no_grad()
+    def point_tracking(self, images: List[np.ndarray], points: List[np.ndarray]) -> List[np.ndarray]:
+        dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+        with torch.amp.autocast(dtype=dtype):
+                images = images[None]  # add batch dimension
+                aggregated_tokens_list, ps_idx = self.model.aggregator(images)
+        
+        points = torch.FloatTensor(points).to(self.device)
+        track_list, vis_score, conf_score = self.model.track_head(aggregated_tokens_list, images, ps_idx, query_points=points[None])
+        return track_list, vis_score, conf_score
+
 
 
 

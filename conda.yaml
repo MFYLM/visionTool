@@ -1,11 +1,11 @@
-name: vision-tool
+name: visiontool
 channels:
   - pytorch
   - nvidia
   - conda-forge
   - defaults
 dependencies:
-  - python=3.9
+  - python=3.10
   - pytorch==2.1.0
   # PIP packages (for packages not available via conda)
   - pip
@@ -17,7 +17,7 @@ dependencies:
     - easydict
     - openexr==3.3.1
     - click==8.1.7
-    - trimesh==4.5.1
+    - trimesh
     - pillow==10.4.0
     - huggingface_hub==0.25.2
     - torchvision
@@ -28,7 +28,6 @@ dependencies:
     - imageio-ffmpeg==0.4.8
     - einops==0.6.1
     - tensorboard
-    # Monst3r requirements
     - pyglet<2
     - gradio
     - gdown
@@ -36,3 +35,13 @@ dependencies:
     - timm==0.6.13
     - flow-vis
     - roma
+    - hydra-core
+    - omegaconf
+    - safetensors
+    - onnxruntime
+    - requests
+    - ipdb
+    - transformers
+    - plyfile
+    - open3d==0.17.0
+    - viser
